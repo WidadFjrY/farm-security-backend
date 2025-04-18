@@ -41,7 +41,7 @@ func MQTTRequest(mqttConf web.MQTTRequest) (bool, string) {
 		panic(token.Error())
 	}
 
-	timeOut := 5
+	timeOut := 10
 
 	select {
 	case <-done:
