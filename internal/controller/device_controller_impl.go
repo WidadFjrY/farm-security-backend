@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"context"
 	"farm-scurity/domain/web"
 	"farm-scurity/internal/broker"
 	"farm-scurity/internal/service"
@@ -26,24 +27,32 @@ func NewDeviceController(historyServ service.HistoryService, pictureServ service
 }
 
 func (control *DeviceControllerImpl) Upload(ctx *gin.Context) {
-	pictureId := ctx.Params.ByName("picture_id")
+	pictureId := ctx.Param("picture_id")
 
 	contentType := ctx.GetHeader("Content-Type")
 	if contentType != "image/jpeg" {
 		panic(exception.NewBadRequestError("Invalid Content-Type! Expected image/jpeg"))
 	}
 
-	body, err := io.ReadAll(ctx.Request.Body)
-	helper.Err(err)
-
 	filePath := fmt.Sprintf("public/images/%s.jpg", pictureId)
 
-	err = os.WriteFile(filePath, body, 0644)
-	helper.Err(err)
+	out, err := os.Create(filePath)
+	if err != nil {
+		helper.Err(err)
+	}
+	defer out.Close()
 
-	control.PictureServ.Save(ctx.Request.Context(), filePath, pictureId)
+	_, err = io.Copy(out, ctx.Request.Body)
+	if err != nil {
+		helper.Err(err)
+	}
 
-	helper.Response(ctx, http.StatusOK, "Ok", "success")
+	go func(filePath, pictureId string) {
+		control.PictureServ.Save(context.Background(), filePath, pictureId)
+	}(filePath, pictureId)
+
+	ctx.Header("Connection", "close")
+	ctx.String(http.StatusOK, "ok")
 }
 
 func (control *DeviceControllerImpl) MotionDetected(ctx *gin.Context) {
@@ -54,16 +63,18 @@ func (control *DeviceControllerImpl) MotionDetected(ctx *gin.Context) {
 	helper.Err(err)
 
 	if request.MotionDetected {
-		control.HistoryServ.Create(ctx.Request.Context(), "Gerakan Terdeteksi", pictureId, fmt.Sprintf("Gerakan Terdeteksi dari Sensor PIR dengan ID  %s", request.DeviceId))
+		go func(pictureId string) {
+			control.HistoryServ.Create(context.Background(), "Gerakan Terdeteksi", pictureId, fmt.Sprintf("Gerakan Terdeteksi dari Sensor PIR dengan ID  %s", request.DeviceId))
+		}(pictureId)
 		broker.MQTTRequest(web.MQTTRequest{
 			ClientId: "SERVER",
-			Topic:    "broker/farm-security/notification",
+			Topic:    "bido_dihara/broker/farm-security/notification",
 			Payload:  fmt.Sprintf("Gerakan Terdeteksi dari Sensor PIR dengan ID %s", request.DeviceId),
 			MsgResp:  "ok",
-		})
+		}, true)
 	}
-
-	helper.Response(ctx, http.StatusOK, "Ok", "")
+	ctx.Header("Connection", "close")
+	ctx.String(http.StatusOK, "ok")
 }
 
 func (control *DeviceControllerImpl) GetDevices(ctx *gin.Context) {
@@ -76,10 +87,10 @@ func (control *DeviceControllerImpl) SetIsActive(ctx *gin.Context) {
 
 	isSuccess, _ := broker.MQTTRequest(web.MQTTRequest{
 		ClientId: "SERVER",
-		Topic:    "broker/farm-security",
+		Topic:    "bido_dihara/broker/farm-security",
 		Payload:  fmt.Sprintf("DISABLE SENSOR ID: %s, IsActive: %s", request.ID, strconv.FormatBool(*request.IsActive)),
 		MsgResp:  "ok",
-	})
+	}, false)
 
 	if isSuccess {
 		control.DeviceServ.SetIsActive(ctx.Request.Context(), request)
